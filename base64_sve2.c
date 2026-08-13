@@ -3,6 +3,11 @@
 #include <arm_sve.h>
 #include <string.h>
 
+#if defined(BASE64_SVE2_USE_TBL2_VL256) && \
+    defined(BASE64_SVE2_USE_TBL2_VL_GE512)
+#error "TBL2 vector-length paths are mutually exclusive"
+#endif
+
 static const char B64[64] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -37,13 +42,19 @@ size_t base64_encode_sve2(const uint8_t *src, size_t src_len,
     svuint32_t mask = svdup_u32(0x3f3f3f3f);
     svuint8_t pack  = svld1_u8(p8, pack_raw);
 
-#if defined(HAVE_SVTBL2)
+#if defined(BASE64_SVE2_USE_TBL2_VL256)
     svuint8x2_t b64tbl = svcreate2_u8(
         svld1_u8(p8, (const uint8_t*)B64),
         svld1_u8(p8, (const uint8_t*)B64 + 32));
+#elif defined(BASE64_SVE2_USE_TBL2_VL_GE512)
+    svbool_t p_b64 = svwhilelt_b8((uint64_t)0, (uint64_t)64);
+    svuint8x2_t b64tbl = svcreate2_u8(
+        svld1_u8(p_b64, (const uint8_t*)B64), svdup_u8(0));
 #else
-    svuint8_t b64_lo = svld1_u8(p8, (const uint8_t*)B64);
-    svuint8_t b64_hi = svld1_u8(p8, (const uint8_t*)B64 + 32);
+    svbool_t p_b64 = svwhilelt_b8((uint64_t)0, (uint64_t)64);
+    svbool_t p_b64_hi = svwhilelt_b8((uint64_t)0, (uint64_t)32);
+    svuint8_t b64_lo = svld1_u8(p_b64, (const uint8_t*)B64);
+    svuint8_t b64_hi = svld1_u8(p_b64_hi, (const uint8_t*)B64 + 32);
     svuint8_t c31    = svdup_u8(0x1F);
 #endif
 
@@ -61,7 +72,8 @@ size_t base64_encode_sve2(const uint8_t *src, size_t src_len,
         svuint32_t reversed1 = svrevb_u32_x(p32, scattered1);
         svuint8_t  sextets   = svreinterpret_u8_u32(reversed);
         svuint8_t  sextets1  = svreinterpret_u8_u32(reversed1);
-#if defined(HAVE_SVTBL2)
+#if defined(BASE64_SVE2_USE_TBL2_VL256) || \
+    defined(BASE64_SVE2_USE_TBL2_VL_GE512)
         svuint8_t  result  = svtbl2_u8(b64tbl, sextets);
         svuint8_t  result1 = svtbl2_u8(b64tbl, sextets1);
 #else
@@ -80,7 +92,8 @@ size_t base64_encode_sve2(const uint8_t *src, size_t src_len,
         svuint32_t scattered = svbdep_u32(packed, mask);
         svuint32_t reversed  = svrevb_u32_x(p32, scattered);
         svuint8_t  sextets   = svreinterpret_u8_u32(reversed);
-#if defined(HAVE_SVTBL2)
+#if defined(BASE64_SVE2_USE_TBL2_VL256) || \
+    defined(BASE64_SVE2_USE_TBL2_VL_GE512)
         svuint8_t  result = svtbl2_u8(b64tbl, sextets);
 #else
         svuint8_t  result = svtbl(b64_hi, svand_u8_x(p8, sextets, c31));
@@ -97,7 +110,8 @@ size_t base64_encode_sve2(const uint8_t *src, size_t src_len,
         svuint32_t pkd   = svbdep_u32(
             svreinterpret_u32_u8(svtbl(raw, pack)), mask);
         svuint8_t sxt    = svreinterpret_u8_u32(svrevb_u32_x(p32, pkd));
-#if defined(HAVE_SVTBL2)
+#if defined(BASE64_SVE2_USE_TBL2_VL256) || \
+    defined(BASE64_SVE2_USE_TBL2_VL_GE512)
         svuint8_t result = svtbl2_u8(b64tbl, sxt);
 #else
         svuint8_t result = svtbl(b64_hi, svand_u8_x(p8, sxt, c31));
@@ -122,11 +136,14 @@ size_t base64_encode_sve2(const uint8_t *src, size_t src_len,
 
 /* ---- Decoder: ld -> tbl2/nibble -> revb -> bext -> tbl(unpk) -> st ---- */
 
+#if !defined(BASE64_SVE2_USE_TBL2_VL256) && \
+    !defined(BASE64_SVE2_USE_TBL2_VL_GE512)
 static void build_hi_nibble(uint8_t t[32]) {
     memset(t, 0, 32);
     t[3]=52; t[4]=255; t[5]=15; t[6]=25; t[7]=41;
     /* '+' '/' handled by svsel */
 }
+#endif
 
 size_t base64_decode_sve2(const char *src, size_t src_len,
                           uint8_t *dst, size_t dst_cap) {
@@ -137,16 +154,25 @@ size_t base64_decode_sve2(const char *src, size_t src_len,
     svbool_t p8 = svptrue_b8(), p32 = svptrue_b32();
     svuint32_t bm = svdup_u32(0x3f3f3f3f);
 
-#if defined(HAVE_SVTBL2) && !defined(BASE64_SVE2_FORCE_DEC_NIBBLE)
+#if defined(BASE64_SVE2_USE_TBL2_VL256) || \
+    defined(BASE64_SVE2_USE_TBL2_VL_GE512)
     static const uint8_t DECTAB[128] = {
         0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
         0,0,0,0,0,0,0,0,0,0,0,62,0,0,0,63,52,53,54,55,56,57,58,59,60,61,0,0,0,0,0,0,
         0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,0,0,0,0,0,
         0,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,0,0,0,0,0,
     };
-#  if defined(HAVE_SVTBL2_128)
-    svuint8x2_t rt_full = svcreate2_u8(
-        svld1_u8(p8, DECTAB), svld1_u8(p8, DECTAB + 64));
+#  if defined(BASE64_SVE2_USE_TBL2_VL_GE512)
+    size_t dec_first = vl_b < 128 ? vl_b : 128;
+    svuint8_t dec_lo = svld1_u8(
+        svwhilelt_b8((uint64_t)0, (uint64_t)dec_first), DECTAB);
+    svuint8_t dec_hi = svdup_u8(0);
+    if (vl_b < 128) {
+        dec_hi = svld1_u8(
+            svwhilelt_b8((uint64_t)0, (uint64_t)(128 - vl_b)),
+            DECTAB + vl_b);
+    }
+    svuint8x2_t rt_full = svcreate2_u8(dec_lo, dec_hi);
 #  else
     svuint8x2_t rt_lo = svcreate2_u8(
         svld1_u8(p8, DECTAB), svld1_u8(p8, DECTAB + 32));
@@ -154,11 +180,11 @@ size_t base64_decode_sve2(const char *src, size_t src_len,
         svld1_u8(p8, DECTAB + 64), svld1_u8(p8, DECTAB + 96));
     svuint8_t c64 = svdup_u8(64);
 #  endif
-#endif
-#if !defined(HAVE_SVTBL2) || defined(BASE64_SVE2_FORCE_DEC_NIBBLE)
+#else
     static uint8_t ht[32]; static int ht_ok = 0;
     if (!ht_ok) { build_hi_nibble(ht); ht_ok = 1; }
-    svuint8_t t_hi = svld1_u8(p8, ht);
+    svuint8_t t_hi = svld1_u8(
+        svwhilelt_b8((uint64_t)0, (uint64_t)32), ht);
     svuint8_t c0f = svdup_u8(0x0F), cp = svdup_u8('+'), cs = svdup_u8('/');
     svuint8_t c62 = svdup_u8(62), c63 = svdup_u8(63);
 #endif
@@ -182,10 +208,10 @@ size_t base64_decode_sve2(const char *src, size_t src_len,
     for (g = 0; g < nf2; g += 2 * ng) {
         svuint8_t chars  = svld1_u8(p8, (const uint8_t*)(src + g*4));
         svuint8_t chars1 = svld1_u8(p8, (const uint8_t*)(src + (g + ng)*4));
-#if defined(HAVE_SVTBL2_128) && !defined(BASE64_SVE2_FORCE_DEC_NIBBLE)
+#if defined(BASE64_SVE2_USE_TBL2_VL_GE512)
         svuint8_t val  = svtbl2_u8(rt_full, chars);
         svuint8_t val1 = svtbl2_u8(rt_full, chars1);
-#elif defined(HAVE_SVTBL2) && !defined(BASE64_SVE2_FORCE_DEC_NIBBLE)
+#elif defined(BASE64_SVE2_USE_TBL2_VL256)
         svuint8_t r0  = svtbl2_u8(rt_lo, chars);
         svuint8_t r1  = svtbl2_u8(rt_hi, svsub_u8_x(p8, chars, c64));
         svuint8_t val = svsel_u8(svcmpge_u8(p8, chars, c64), r1, r0);
@@ -216,9 +242,9 @@ size_t base64_decode_sve2(const char *src, size_t src_len,
     /* remainder full chunks */
     for (; g < nf; g += ng) {
         svuint8_t chars = svld1_u8(p8, (const uint8_t*)(src + g*4));
-#if defined(HAVE_SVTBL2_128) && !defined(BASE64_SVE2_FORCE_DEC_NIBBLE)
+#if defined(BASE64_SVE2_USE_TBL2_VL_GE512)
         svuint8_t val = svtbl2_u8(rt_full, chars);
-#elif defined(HAVE_SVTBL2) && !defined(BASE64_SVE2_FORCE_DEC_NIBBLE)
+#elif defined(BASE64_SVE2_USE_TBL2_VL256)
         svuint8_t r0  = svtbl2_u8(rt_lo, chars);
         svuint8_t r1  = svtbl2_u8(rt_hi, svsub_u8_x(p8, chars, c64));
         svuint8_t val = svsel_u8(svcmpge_u8(p8, chars, c64), r1, r0);
@@ -240,9 +266,9 @@ size_t base64_decode_sve2(const char *src, size_t src_len,
         size_t    tail  = n_groups - g;
         svbool_t  p_tail_ld = svwhilelt_b8((uint64_t)0, (uint64_t)(tail*4));
         svuint8_t chars = svld1_u8(p_tail_ld, (const uint8_t*)(src + g*4));
-#if defined(HAVE_SVTBL2_128) && !defined(BASE64_SVE2_FORCE_DEC_NIBBLE)
+#if defined(BASE64_SVE2_USE_TBL2_VL_GE512)
         svuint8_t val = svtbl2_u8(rt_full, chars);
-#elif defined(HAVE_SVTBL2) && !defined(BASE64_SVE2_FORCE_DEC_NIBBLE)
+#elif defined(BASE64_SVE2_USE_TBL2_VL256)
         svuint8_t r0  = svtbl2_u8(rt_lo, chars);
         svuint8_t r1  = svtbl2_u8(rt_hi, svsub_u8_x(p8, chars, c64));
         svuint8_t val = svsel_u8(svcmpge_u8(p8, chars, c64), r1, r0);

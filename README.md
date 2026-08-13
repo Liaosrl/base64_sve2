@@ -12,7 +12,9 @@ cmake --build build
 ```
 
 The CMakeLists.txt hardcodes `-march=armv8-a+sve2+sve2-bitperm`. For cross-compile or
-alternative flags, pass `-DCMAKE_C_FLAGS=...` on the first cmake invocation.
+alternative flags, pass `-DCMAKE_C_FLAGS=...` on the first cmake invocation. Native builds
+auto-detect the lookup path; cross-builds default to `TBL2_VL256`. Override either with
+`-DBASE64_SVE2_LOOKUP_MODE=AUTO|TBL2_VL256|TBL2_VL_GE512|FALLBACK`.
 
 ## API
 

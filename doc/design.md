@@ -35,7 +35,7 @@ Per u32 lane: 4 B64 chars → 4 sextets → 3 output bytes.
 **A. Char→sextet lookup** (`svtbl2` or nibble).
 
 - **svtbl2 path**: Two 64-entry reverse tables. `svtbl2_u8(lo,chars)` covers 0–63, `svtbl2_u8(hi,chars-64)` covers 64–127. `svcmpge`+`svsel` merge.
-- **Nibble path**: `sextet = tbl[char>>4] + (char & 0xF)`. Covers A-Z/a-z/0-9 with one TBL + ADD. `+` and `/` corrected by 2×`svsel`. Fallback for VL<256 or compilers without `svtbl2`.
+- **Nibble path**: `sextet = tbl[char>>4] + (char & 0xF)`. Covers A-Z/a-z/0-9 with one TBL + ADD. `+` and `/` corrected by 2×`svsel`. Fallback for intermediate VLs (for example 384 bit) or compilers without `svtbl2`.
 
 **B. `revb` + `bext`** (bit extract, PEXT-equivalent). `revb` swaps sextet order. `bext(rev, 0x3f3f3f3f)` compacts 4×6 bits into 24 contiguous bits — **2 instructions** replacing 11 shift+add operations.
 
@@ -49,8 +49,10 @@ Per u32 lane: 4 B64 chars → 4 sextets → 3 output bytes.
 |----|---------|--------------------|---------------------|
 | 128 bit (16B) | 32 | ❌ unsupported | ❌ unsupported |
 | 256 bit (32B) | 64 | 1 table ✓ | 2 tables ✓ |
-| 512 bit (64B) | 128 | 1 table ✓ | 1 table ✓ |
+| 384 bit (48B) | 96 | `tbl`+`tbx` fallback | nibble fallback |
+| ≥512 bit (≥64B) | ≥128 | 1 table ✓ | 1 table ✓ |
 
-VL<256 is rejected at CMake time — both `svtbl2` and `tbl+tbx` fallback require
-≥32-byte registers to cover 64 B64 entries. The CMake `check_c_source_runs`
-verifies `svcntb() >= 32`; a FATAL_ERROR is raised on narrower hardware.
+In native `AUTO` mode, a single CMake `try_run` reads `svcntb() * 8`; VL<256 is
+rejected because the table paths need ≥32-byte registers. Set
+`BASE64_SVE2_LOOKUP_MODE` to `TBL2_VL256`, `TBL2_VL_GE512`, or `FALLBACK` to
+override branch selection; manual modes must match the target VL.
